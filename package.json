@@ -1,0 +1,41 @@
+{
+  "name": "aaims",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AAIMS — Australian AI Management & Safety Interface POC",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "clean:ports": "powershell -ExecutionPolicy Bypass -File scripts/clean_ports.ps1",
+    "typecheck": "tsc --noEmit",
+    "builder": "tsx scripts/run_builder.ts",
+    "builder:ping": "tsx scripts/run_builder.ts --ping",
+    "install:all": "npm install",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev --workspace=server",
+    "dev:client": "npm run dev --workspace=client",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "npm run build --workspace=server",
+    "build:client": "npm run build --workspace=client",
+    "start:server": "npm run start --workspace=server",
+    "test:api": "playwright test tests/api",
+    "test:e2e": "playwright test tests/e2e",
+    "test:vitest": "vitest run --config vitest.config.ts tests/api",
+    "test": "npm run test:api && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.10.0",
+    "concurrently": "^9.1.0",
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}
