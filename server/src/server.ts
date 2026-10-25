@@ -20,10 +20,13 @@ import {
   listWorkingGroupMembers,
   getWorkingGroupMember,
   listBreaches,
+  getBreach,
   createBreach,
   listRemediations,
+  getRemediation,
   createRemediation,
   listComplianceAudits,
+  getComplianceAudit,
   createComplianceAudit,
   listGovernanceRequests,
   createGovernanceRequest,
@@ -31,6 +34,7 @@ import {
   createMeetingDecision,
   listRiskAssessments,
   createRiskAssessment,
+  attachAttestationToEntity,
   saveAttestationRecord,
   listAttestationRecords,
 } from './db.js';
@@ -213,12 +217,27 @@ app.post(
 
     // Cryptographic attestation: SOLUTION_REQUESTED
     try {
-      const att = await attestGovernanceEvent(GOVERNANCE_EVENT_TYPES.SOLUTION_REQUESTED, {
-        solution_id: created.id,
-        title: created.title,
-        owner_name: created.owner_name,
-        risk_tier: created.risk_tier,
-      });
+      const att = await attestGovernanceEvent(
+        GOVERNANCE_EVENT_TYPES.SOLUTION_REQUESTED,
+        {
+          solution_id: created.id,
+          title: created.title,
+          business_problem: created.business_problem,
+          requesting_unit: created.requesting_unit,
+          owner_name: created.owner_name,
+          owner_remit: created.owner_remit,
+          risk_tier: created.risk_tier,
+          lifecycle_stage: created.lifecycle_stage,
+          capability_ids: created.capability_ids,
+          control_ids: created.control_ids,
+        },
+        {
+          entityType: 'SOLUTION',
+          entityId: created.id,
+          entityVersion: created.entity_version ?? 1,
+          timestamp: created.created_at,
+        }
+      );
       saveAttestationRecord(att, 'SOLUTION', created.id);
     } catch (err) {
       console.warn('[bitbop] Attestation warning:', err);
@@ -270,13 +289,29 @@ app.patch(
           ? GOVERNANCE_EVENT_TYPES.SOLUTION_APPROVED
           : GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION;
 
-      const att = await attestGovernanceEvent(eventType, {
-        solution_id: updated.id,
-        title: updated.title,
-        target_stage: targetStage,
-        approver_name: req.body.approver_name,
-        risk_tier: updated.risk_tier,
-      });
+      const att = await attestGovernanceEvent(
+        eventType,
+        {
+          solution_id: updated.id,
+          title: updated.title,
+          business_problem: updated.business_problem,
+          requesting_unit: updated.requesting_unit,
+          owner_name: updated.owner_name,
+          owner_remit: updated.owner_remit,
+          risk_tier: updated.risk_tier,
+          lifecycle_stage: updated.lifecycle_stage,
+          target_stage: targetStage,
+          approver_name: req.body.approver_name ?? null,
+          capability_ids: updated.capability_ids,
+          control_ids: updated.control_ids,
+        },
+        {
+          entityType: 'SOLUTION',
+          entityId: updated.id,
+          entityVersion: updated.entity_version ?? 1,
+          timestamp: updated.updated_at,
+        }
+      );
       saveAttestationRecord(att, 'SOLUTION', updated.id);
     } catch (err) {
       console.warn('[bitbop] Attestation warning:', err);
@@ -286,69 +321,160 @@ app.patch(
   })
 );
 
-app.post('/api/solutions/:id/capabilities', (req, res) => {
-  const solution = getSolution(getParamId(req));
-  if (!solution) return notFound(res, 'Solution');
+app.post(
+  '/api/solutions/:id/capabilities',
+  asyncHandler(async (req, res) => {
+    const solution = getSolution(getParamId(req));
+    if (!solution) return notFound(res, 'Solution');
 
-  const ids: string[] = req.body.capability_ids ?? (req.body.capabilityId ? [req.body.capabilityId] : []);
-  for (const cid of ids) {
-    const cap = getCapability(cid);
-    if (!cap) {
-      return res.status(400).json({ error: `Capability "${cid}" not found`, code: 'CAPABILITY_NOT_FOUND' });
-    }
-  }
-  let updated = solution;
-  for (const cid of ids) {
-    updated = linkCapabilityToSolution(solution.id, cid);
-  }
-  return res.status(200).json(updated);
-});
-
-app.post('/api/solutions/:id/controls', (req, res) => {
-  const solution = getSolution(getParamId(req));
-  if (!solution) return notFound(res, 'Solution');
-
-  const ids: string[] = req.body.control_ids ?? (req.body.controlId ? [req.body.controlId] : []);
-  for (const cid of ids) {
-    const ctrl = getControl(cid);
-    if (!ctrl) {
-      return res.status(400).json({ error: `Control "${cid}" not found`, code: 'CONTROL_NOT_FOUND' });
-    }
-  }
-  let updated = solution;
-  for (const cid of ids) {
-    updated = linkControlToSolution(solution.id, cid);
-  }
-  return res.status(200).json(updated);
-});
-
-app.patch('/api/solutions/:id', (req, res) => {
-  const solution = getSolution(getParamId(req));
-  if (!solution) return notFound(res, 'Solution');
-
-  const updates = { ...req.body };
-  // Block stage bypass via generic patch
-  delete updates.lifecycle_stage;
-  delete updates.stage;
-
-  if (updates.owner_name !== undefined) {
-    try {
-      validateNamedOwner(updates.owner_name, 'SOLUTION');
-    } catch (err: unknown) {
-      if (err instanceof InvariantError) {
-        return res.status(400).json({ error: err.message, code: err.code });
+    const ids: string[] = req.body.capability_ids ?? (req.body.capabilityId ? [req.body.capabilityId] : []);
+    for (const cid of ids) {
+      const cap = getCapability(cid);
+      if (!cap) {
+        return res.status(400).json({ error: `Capability "${cid}" not found`, code: 'CAPABILITY_NOT_FOUND' });
       }
-      throw err;
     }
-  }
+    let updated = solution;
+    for (const cid of ids) {
+      updated = linkCapabilityToSolution(solution.id, cid);
+    }
+    if ((updated.entity_version ?? 1) !== (solution.entity_version ?? 1)) {
+      try {
+        const att = await attestGovernanceEvent(
+          GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION,
+          {
+            solution_id: updated.id,
+            title: updated.title,
+            business_problem: updated.business_problem,
+            requesting_unit: updated.requesting_unit,
+            owner_name: updated.owner_name,
+            owner_remit: updated.owner_remit,
+            risk_tier: updated.risk_tier,
+            lifecycle_stage: updated.lifecycle_stage,
+            capability_ids: updated.capability_ids,
+            control_ids: updated.control_ids,
+          },
+          {
+            entityType: 'SOLUTION',
+            entityId: updated.id,
+            entityVersion: updated.entity_version ?? 1,
+            timestamp: updated.updated_at,
+          }
+        );
+        saveAttestationRecord(att, 'SOLUTION', updated.id);
+      } catch (err) {
+        console.warn('[bitbop] Attestation warning:', err);
+      }
+    }
+    return res.status(200).json(updated);
+  })
+);
 
-  if (updates.risk_tier !== undefined) {
-    updates.risk_tier = String(updates.risk_tier).toUpperCase().trim();
-  }
+app.post(
+  '/api/solutions/:id/controls',
+  asyncHandler(async (req, res) => {
+    const solution = getSolution(getParamId(req));
+    if (!solution) return notFound(res, 'Solution');
 
-  const updated = updateSolution(getParamId(req), updates);
-  return res.json(updated);
-});
+    const ids: string[] = req.body.control_ids ?? (req.body.controlId ? [req.body.controlId] : []);
+    for (const cid of ids) {
+      const ctrl = getControl(cid);
+      if (!ctrl) {
+        return res.status(400).json({ error: `Control "${cid}" not found`, code: 'CONTROL_NOT_FOUND' });
+      }
+    }
+    let updated = solution;
+    for (const cid of ids) {
+      updated = linkControlToSolution(solution.id, cid);
+    }
+    if ((updated.entity_version ?? 1) !== (solution.entity_version ?? 1)) {
+      try {
+        const att = await attestGovernanceEvent(
+          GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION,
+          {
+            solution_id: updated.id,
+            title: updated.title,
+            business_problem: updated.business_problem,
+            requesting_unit: updated.requesting_unit,
+            owner_name: updated.owner_name,
+            owner_remit: updated.owner_remit,
+            risk_tier: updated.risk_tier,
+            lifecycle_stage: updated.lifecycle_stage,
+            capability_ids: updated.capability_ids,
+            control_ids: updated.control_ids,
+          },
+          {
+            entityType: 'SOLUTION',
+            entityId: updated.id,
+            entityVersion: updated.entity_version ?? 1,
+            timestamp: updated.updated_at,
+          }
+        );
+        saveAttestationRecord(att, 'SOLUTION', updated.id);
+      } catch (err) {
+        console.warn('[bitbop] Attestation warning:', err);
+      }
+    }
+    return res.status(200).json(updated);
+  })
+);
+
+app.patch(
+  '/api/solutions/:id',
+  asyncHandler(async (req, res) => {
+    const solution = getSolution(getParamId(req));
+    if (!solution) return notFound(res, 'Solution');
+
+    const updates = { ...req.body };
+    // Block stage bypass via generic patch
+    delete updates.lifecycle_stage;
+    delete updates.stage;
+
+    if (updates.owner_name !== undefined) {
+      try {
+        validateNamedOwner(updates.owner_name, 'SOLUTION');
+      } catch (err: unknown) {
+        if (err instanceof InvariantError) {
+          return res.status(400).json({ error: err.message, code: err.code });
+        }
+        throw err;
+      }
+    }
+
+    if (updates.risk_tier !== undefined) {
+      updates.risk_tier = String(updates.risk_tier).toUpperCase().trim();
+    }
+
+    const updated = updateSolution(getParamId(req), updates);
+    try {
+      const att = await attestGovernanceEvent(
+        GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION,
+        {
+          solution_id: updated.id,
+          title: updated.title,
+          business_problem: updated.business_problem,
+          requesting_unit: updated.requesting_unit,
+          owner_name: updated.owner_name,
+          owner_remit: updated.owner_remit,
+          risk_tier: updated.risk_tier,
+          lifecycle_stage: updated.lifecycle_stage,
+          capability_ids: updated.capability_ids,
+          control_ids: updated.control_ids,
+        },
+        {
+          entityType: 'SOLUTION',
+          entityId: updated.id,
+          entityVersion: updated.entity_version ?? 1,
+          timestamp: updated.updated_at,
+        }
+      );
+      saveAttestationRecord(att, 'SOLUTION', updated.id);
+    } catch (err) {
+      console.warn('[bitbop] Attestation warning:', err);
+    }
+    return res.json(updated);
+  })
+);
 
 // =============================================================================
 // Capabilities (Core Object 2)
@@ -421,17 +547,32 @@ async function handleCapabilityUpdate(req: Request, res: Response): Promise<unkn
 
   const updated = updateCapability(capability.id, req.body);
 
-  if (req.body.status === 'AUTHORISED' && capability.status !== 'AUTHORISED') {
-    try {
-      const att = await attestGovernanceEvent(GOVERNANCE_EVENT_TYPES.CAPABILITY_AUTHORISED, {
+  try {
+    const eventType =
+      updated.status === 'AUTHORISED'
+        ? GOVERNANCE_EVENT_TYPES.CAPABILITY_AUTHORISED
+        : GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION;
+    const att = await attestGovernanceEvent(
+      eventType,
+      {
         capability_id: updated.id,
         name: updated.name,
+        description: updated.description,
+        provider_or_tech: updated.provider_or_tech,
         owner_name: updated.owner_name,
-      });
-      saveAttestationRecord(att, 'CAPABILITY', updated.id);
-    } catch (err) {
-      console.warn('[bitbop] Attestation warning:', err);
-    }
+        status: updated.status,
+        control_ids: updated.control_ids,
+      },
+      {
+        entityType: 'CAPABILITY',
+        entityId: updated.id,
+        entityVersion: updated.entity_version ?? 1,
+        timestamp: updated.updated_at,
+      }
+    );
+    saveAttestationRecord(att, 'CAPABILITY', updated.id);
+  } catch (err) {
+    console.warn('[bitbop] Attestation warning:', err);
   }
 
   return res.status(200).json(updated);
@@ -440,23 +581,51 @@ async function handleCapabilityUpdate(req: Request, res: Response): Promise<unkn
 app.patch('/api/capabilities/:id/status', asyncHandler(handleCapabilityUpdate));
 app.patch('/api/capabilities/:id', asyncHandler(handleCapabilityUpdate));
 
-app.post('/api/capabilities/:id/controls', (req, res) => {
-  const capability = getCapability(getParamId(req));
-  if (!capability) return notFound(res, 'Capability');
+app.post(
+  '/api/capabilities/:id/controls',
+  asyncHandler(async (req, res) => {
+    const capability = getCapability(getParamId(req));
+    if (!capability) return notFound(res, 'Capability');
 
-  const ids: string[] = req.body.control_ids ?? (req.body.controlId ? [req.body.controlId] : []);
-  for (const cid of ids) {
-    const ctrl = getControl(cid);
-    if (!ctrl) {
-      return res.status(400).json({ error: `Control "${cid}" not found`, code: 'CONTROL_NOT_FOUND' });
+    const ids: string[] = req.body.control_ids ?? (req.body.controlId ? [req.body.controlId] : []);
+    for (const cid of ids) {
+      const ctrl = getControl(cid);
+      if (!ctrl) {
+        return res.status(400).json({ error: `Control "${cid}" not found`, code: 'CONTROL_NOT_FOUND' });
+      }
     }
-  }
-  let updated = capability;
-  for (const cid of ids) {
-    updated = linkControlToCapability(capability.id, cid);
-  }
-  return res.status(200).json(updated);
-});
+    let updated = capability;
+    for (const cid of ids) {
+      updated = linkControlToCapability(capability.id, cid);
+    }
+    if ((updated.entity_version ?? 1) !== (capability.entity_version ?? 1)) {
+      try {
+        const att = await attestGovernanceEvent(
+          GOVERNANCE_EVENT_TYPES.WORKING_GROUP_DECISION,
+          {
+            capability_id: updated.id,
+            name: updated.name,
+            description: updated.description,
+            provider_or_tech: updated.provider_or_tech,
+            owner_name: updated.owner_name,
+            status: updated.status,
+            control_ids: updated.control_ids,
+          },
+          {
+            entityType: 'CAPABILITY',
+            entityId: updated.id,
+            entityVersion: updated.entity_version ?? 1,
+            timestamp: updated.updated_at,
+          }
+        );
+        saveAttestationRecord(att, 'CAPABILITY', updated.id);
+      } catch (err) {
+        console.warn('[bitbop] Attestation warning:', err);
+      }
+    }
+    return res.status(200).json(updated);
+  })
+);
 
 app.get('/api/capabilities/:id/controls', (req, res) => {
   const capability = getCapability(getParamId(req));
@@ -478,24 +647,34 @@ app.get('/api/governance/breaches', (_req, res) => {
 app.post(
   '/api/governance/breaches',
   asyncHandler(async (req, res) => {
-    let att;
+    const breach = createBreach(req.body);
     try {
-      att = await attestGovernanceEvent(GOVERNANCE_EVENT_TYPES.BREACH_NOTIFICATION, {
-        title: req.body.title,
-        severity: req.body.severity,
-        affected_entity_type: req.body.affected_entity_type,
-        affected_entity_id: req.body.affected_entity_id,
-        reported_by: req.body.reported_by,
-      });
+      const att = await attestGovernanceEvent(
+        GOVERNANCE_EVENT_TYPES.BREACH_NOTIFICATION,
+        {
+          breach_id: breach.id,
+          title: breach.title,
+          severity: breach.severity,
+          affected_entity_type: breach.affected_entity_type,
+          affected_entity_id: breach.affected_entity_id,
+          description: breach.description,
+          reported_by: breach.reported_by,
+          status: breach.status,
+        },
+        {
+          entityType: 'BREACH',
+          entityId: breach.id,
+          entityVersion: breach.entity_version ?? 1,
+          timestamp: breach.created_at,
+        }
+      );
+      const savedAtt = saveAttestationRecord(att, 'BREACH', breach.id);
+      attachAttestationToEntity('breaches', breach.id, savedAtt);
     } catch (err) {
       console.warn('[bitbop] Attestation warning:', err);
     }
 
-    const breach = createBreach(req.body, att);
-    if (att) {
-      saveAttestationRecord(att, 'BREACH', breach.id);
-    }
-    return res.status(201).json(breach);
+    return res.status(201).json(getBreach(breach.id)!);
   })
 );
 
@@ -506,22 +685,31 @@ app.get('/api/governance/remediations', (_req, res) => {
 app.post(
   '/api/governance/remediations',
   asyncHandler(async (req, res) => {
-    let att;
+    const remediation = createRemediation(req.body);
     try {
-      att = await attestGovernanceEvent(GOVERNANCE_EVENT_TYPES.BREACH_REMEDIATION, {
-        breach_id: req.body.breach_id,
-        remediation_summary: req.body.remediation_summary,
-        verified_by: req.body.verified_by,
-      });
+      const att = await attestGovernanceEvent(
+        GOVERNANCE_EVENT_TYPES.BREACH_REMEDIATION,
+        {
+          remediation_id: remediation.id,
+          breach_id: remediation.breach_id,
+          remediation_summary: remediation.remediation_summary,
+          verified_by: remediation.verified_by,
+          status: remediation.status,
+        },
+        {
+          entityType: 'REMEDIATION',
+          entityId: remediation.id,
+          entityVersion: remediation.entity_version ?? 1,
+          timestamp: remediation.created_at,
+        }
+      );
+      const savedAtt = saveAttestationRecord(att, 'REMEDIATION', remediation.id);
+      attachAttestationToEntity('remediations', remediation.id, savedAtt);
     } catch (err) {
       console.warn('[bitbop] Attestation warning:', err);
     }
 
-    const remediation = createRemediation(req.body, att);
-    if (att) {
-      saveAttestationRecord(att, 'REMEDIATION', remediation.id);
-    }
-    return res.status(201).json(remediation);
+    return res.status(201).json(getRemediation(remediation.id)!);
   })
 );
 
@@ -532,23 +720,32 @@ app.get('/api/governance/audits', (_req, res) => {
 app.post(
   '/api/governance/audits',
   asyncHandler(async (req, res) => {
-    let att;
+    const audit = createComplianceAudit(req.body);
     try {
-      att = await attestGovernanceEvent(GOVERNANCE_EVENT_TYPES.COMPLIANCE_AUDIT, {
-        audit_name: req.body.audit_name,
-        auditor_name: req.body.auditor_name,
-        guardrails_evaluated: req.body.guardrails_evaluated,
-        overall_compliance_status: req.body.overall_compliance_status,
-      });
+      const att = await attestGovernanceEvent(
+        GOVERNANCE_EVENT_TYPES.COMPLIANCE_AUDIT,
+        {
+          audit_id: audit.id,
+          audit_name: audit.audit_name,
+          auditor_name: audit.auditor_name,
+          guardrails_evaluated: audit.guardrails_evaluated,
+          overall_compliance_status: audit.overall_compliance_status,
+          findings: audit.findings,
+        },
+        {
+          entityType: 'COMPLIANCE_AUDIT',
+          entityId: audit.id,
+          entityVersion: audit.entity_version ?? 1,
+          timestamp: audit.created_at,
+        }
+      );
+      const savedAtt = saveAttestationRecord(att, 'COMPLIANCE_AUDIT', audit.id);
+      attachAttestationToEntity('compliance_audits', audit.id, savedAtt);
     } catch (err) {
       console.warn('[bitbop] Attestation warning:', err);
     }
 
-    const audit = createComplianceAudit(req.body, att);
-    if (att) {
-      saveAttestationRecord(att, 'COMPLIANCE_AUDIT', audit.id);
-    }
-    return res.status(201).json(audit);
+    return res.status(201).json(getComplianceAudit(audit.id)!);
   })
 );
 

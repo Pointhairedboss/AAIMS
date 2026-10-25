@@ -2,9 +2,14 @@
  * AAIMS programmatic invariant API tests.
  * Requires backend running on http://localhost:4000 (Phase 4).
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Server } from 'node:http';
+import { app } from '../../server/src/server.js';
+import { initDatabase } from '../../server/src/db.js';
+import { initBitBopClient } from '../../server/src/bitbop.js';
 
-const BASE = process.env.AAIMS_API_URL ?? 'http://localhost:4000';
+let BASE = process.env.AAIMS_API_URL ?? 'http://localhost:4000';
+let localServer: Server | null = null;
 
 async function api<T = unknown>(
   path: string,
@@ -83,8 +88,32 @@ async function advanceToStage(solutionId: string, target: number) {
 
 describe('AAIMS API invariants', () => {
   beforeAll(async () => {
+    try {
+      const check = await fetch(`${BASE}/api/health`);
+      if (check.ok) return;
+    } catch {
+      // start local in-process server
+    }
+    initDatabase();
+    await initBitBopClient();
+    await new Promise<void>((resolve) => {
+      localServer = app.listen(0, () => {
+        const addr = localServer!.address();
+        if (addr && typeof addr === 'object') {
+          BASE = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
     const health = await api('/api/health');
     expect(health.status).toBe(200);
+  });
+
+  afterAll(async () => {
+    if (localServer) {
+      await new Promise<void>((resolve) => localServer!.close(() => resolve()));
+      localServer = null;
+    }
   });
 
   describe('Invariant 1 — Solution stage gates', () => {
@@ -117,8 +146,14 @@ describe('AAIMS API invariants', () => {
         method: 'POST',
         body: JSON.stringify({ controlId }),
       });
+      await attachControl(capabilityId, controlId);
       const to6 = await advanceStage(solutionId, 6);
       expect(to6.status).toBe(200);
+
+      await api(`/api/controls/${controlId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'GAP_IDENTIFIED' }),
+      });
 
       const { status, body } = await advanceStage(solutionId, 7);
       expect(status).toBeGreaterThanOrEqual(400);

@@ -1,5 +1,12 @@
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require('node:sqlite') as {
+  DatabaseSync: typeof DatabaseSyncType;
+};
+type DatabaseSync = DatabaseSyncType;
 import type {
   Solution,
   CreateSolutionInput,
@@ -70,6 +77,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       lifecycle_stage INTEGER NOT NULL DEFAULT 1,
       capability_ids TEXT NOT NULL DEFAULT '[]',
       control_ids TEXT NOT NULL DEFAULT '[]',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -85,6 +93,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       owner_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'DRAFT',
       control_ids TEXT NOT NULL DEFAULT '[]',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -132,6 +141,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       description TEXT NOT NULL DEFAULT '',
       reported_by TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'REPORTED',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       reported_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -147,6 +157,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       remediation_summary TEXT NOT NULL,
       verified_by TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'COMPLETED',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       attestation TEXT
@@ -162,6 +173,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       guardrails_evaluated TEXT NOT NULL DEFAULT '[]',
       overall_compliance_status TEXT NOT NULL DEFAULT 'COMPLIANT',
       findings TEXT NOT NULL DEFAULT '',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       attestation TEXT
@@ -178,6 +190,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       owner_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'OPEN',
       solution_id TEXT,
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       attestation TEXT
@@ -192,6 +205,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       decision TEXT NOT NULL,
       solution_id TEXT,
       attendees TEXT NOT NULL DEFAULT '[]',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       decided_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       attestation TEXT
@@ -206,6 +220,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       risk_tier TEXT NOT NULL DEFAULT 'LOW',
       findings TEXT NOT NULL DEFAULT '',
       assessor_name TEXT NOT NULL,
+      entity_version INTEGER NOT NULL DEFAULT 1,
       assessed_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
       attestation TEXT
@@ -219,12 +234,36 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       event_type TEXT NOT NULL,
       entity_type TEXT NOT NULL,
       entity_id TEXT NOT NULL,
+      entity_version INTEGER NOT NULL DEFAULT 1,
+      schema_version INTEGER NOT NULL DEFAULT 1,
       beacon_sequence INTEGER NOT NULL,
       signature TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL DEFAULT '{}',
       receipt TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
   `);
+
+  const migrationSql = [
+    'ALTER TABLE solutions ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE capabilities ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE breaches ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE remediations ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE compliance_audits ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE governance_requests ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE meeting_decisions ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE risk_assessments ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE attestations ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE attestations ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1',
+    "ALTER TABLE attestations ADD COLUMN snapshot_json TEXT NOT NULL DEFAULT '{}'",
+  ];
+  for (const stmt of migrationSql) {
+    try {
+      db.exec(stmt);
+    } catch {
+      // column already exists
+    }
+  }
 
   seedInitialData();
 
@@ -243,6 +282,7 @@ function mapSolutionRow(row: Record<string, unknown>): Solution {
     lifecycle_stage: Number(row.lifecycle_stage ?? 1),
     capability_ids: parseJsonArray<string>(row.capability_ids as string),
     control_ids: parseJsonArray<string>(row.control_ids as string),
+    entity_version: Number(row.entity_version ?? 1),
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
   };
@@ -257,6 +297,7 @@ function mapCapabilityRow(row: Record<string, unknown>): Capability {
     owner_name: row.owner_name as string,
     status: row.status as Capability['status'],
     control_ids: parseJsonArray<string>(row.control_ids as string),
+    entity_version: Number(row.entity_version ?? 1),
     created_at: row.created_at as string,
     updated_at: (row.updated_at as string) ?? row.created_at as string,
   };
@@ -304,6 +345,7 @@ function mapBreachRow(row: Record<string, unknown>): Breach {
     description: (row.description as string) ?? '',
     reported_by: row.reported_by as string,
     status: row.status as Breach['status'],
+    entity_version: Number(row.entity_version ?? 1),
     reported_at: row.reported_at as string,
     created_at: row.created_at as string,
     updated_at: row.updated_at as string,
@@ -318,6 +360,7 @@ function mapRemediationRow(row: Record<string, unknown>): Remediation {
     remediation_summary: row.remediation_summary as string,
     verified_by: row.verified_by as string,
     status: row.status as Remediation['status'],
+    entity_version: Number(row.entity_version ?? 1),
     created_at: row.created_at as string,
     updated_at: (row.updated_at as string) ?? row.created_at as string,
     attestation: parseJsonObject<BitBopReceipt>(row.attestation as string),
@@ -332,6 +375,7 @@ function mapComplianceAuditRow(row: Record<string, unknown>): ComplianceAudit {
     guardrails_evaluated: parseJsonArray<number>(row.guardrails_evaluated as string),
     overall_compliance_status: row.overall_compliance_status as string,
     findings: (row.findings as string) ?? '',
+    entity_version: Number(row.entity_version ?? 1),
     created_at: row.created_at as string,
     updated_at: (row.updated_at as string) ?? row.created_at as string,
     attestation: parseJsonObject<BitBopReceipt>(row.attestation as string),
@@ -357,8 +401,8 @@ export function createSolution(input: CreateSolutionInput): Solution {
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO solutions (id, title, business_problem, requesting_unit, owner_name, owner_remit, risk_tier, lifecycle_stage, capability_ids, control_ids, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO solutions (id, title, business_problem, requesting_unit, owner_name, owner_remit, risk_tier, lifecycle_stage, capability_ids, control_ids, entity_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
     )
     .run(
       id,
@@ -394,6 +438,7 @@ export function updateSolution(id: string, updates: Partial<Solution>): Solution
         lifecycle_stage = COALESCE(?, lifecycle_stage),
         capability_ids = COALESCE(?, capability_ids),
         control_ids = COALESCE(?, control_ids),
+        entity_version = entity_version + 1,
         updated_at = ?
        WHERE id = ?`
     )
@@ -455,8 +500,8 @@ export function createCapability(input: CreateCapabilityInput): Capability {
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO capabilities (id, name, description, provider_or_tech, owner_name, status, control_ids, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO capabilities (id, name, description, provider_or_tech, owner_name, status, control_ids, entity_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
     )
     .run(
       id,
@@ -486,6 +531,7 @@ export function updateCapability(id: string, updates: Partial<Capability>): Capa
         owner_name = COALESCE(?, owner_name),
         status = COALESCE(?, status),
         control_ids = COALESCE(?, control_ids),
+        entity_version = entity_version + 1,
         updated_at = ?
        WHERE id = ?`
     )
@@ -628,8 +674,8 @@ export function createBreach(input: CreateBreachInput, attestation?: BitBopRecei
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO breaches (id, title, severity, affected_entity_type, affected_entity_id, description, reported_by, status, reported_at, created_at, updated_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO breaches (id, title, severity, affected_entity_type, affected_entity_id, description, reported_by, status, entity_version, reported_at, created_at, updated_at, attestation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -661,6 +707,7 @@ export function updateBreach(id: string, updates: Partial<Breach>): Breach {
         status = COALESCE(?, status),
         description = COALESCE(?, description),
         attestation = COALESCE(?, attestation),
+        entity_version = entity_version + 1,
         updated_at = ?
        WHERE id = ?`
     )
@@ -694,8 +741,8 @@ export function createRemediation(
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO remediations (id, breach_id, remediation_summary, verified_by, status, created_at, updated_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO remediations (id, breach_id, remediation_summary, verified_by, status, entity_version, created_at, updated_at, attestation)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
     )
     .run(
       id,
@@ -713,6 +760,33 @@ export function createRemediation(
     updateBreach(input.breach_id, { status: 'RESOLVED' });
   } catch {}
 
+  return getRemediation(id)!;
+}
+
+export function updateRemediation(id: string, updates: Partial<Remediation>): Remediation {
+  const existing = getRemediation(id);
+  if (!existing) throw new Error(`Remediation ${id} not found`);
+  const ts = now();
+
+  getDb()
+    .prepare(
+      `UPDATE remediations SET
+        remediation_summary = COALESCE(?, remediation_summary),
+        verified_by = COALESCE(?, verified_by),
+        status = COALESCE(?, status),
+        attestation = COALESCE(?, attestation),
+        entity_version = entity_version + 1,
+        updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      updates.remediation_summary ?? null,
+      updates.verified_by ?? null,
+      updates.status ?? null,
+      updates.attestation ? JSON.stringify(updates.attestation) : null,
+      ts,
+      id
+    );
   return getRemediation(id)!;
 }
 
@@ -734,8 +808,8 @@ export function createComplianceAudit(
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO compliance_audits (id, audit_name, auditor_name, guardrails_evaluated, overall_compliance_status, findings, created_at, updated_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO compliance_audits (id, audit_name, auditor_name, guardrails_evaluated, overall_compliance_status, findings, entity_version, created_at, updated_at, attestation)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
     )
     .run(
       id,
@@ -751,6 +825,37 @@ export function createComplianceAudit(
   return getComplianceAudit(id)!;
 }
 
+export function updateComplianceAudit(id: string, updates: Partial<ComplianceAudit>): ComplianceAudit {
+  const existing = getComplianceAudit(id);
+  if (!existing) throw new Error(`ComplianceAudit ${id} not found`);
+  const ts = now();
+
+  getDb()
+    .prepare(
+      `UPDATE compliance_audits SET
+        audit_name = COALESCE(?, audit_name),
+        auditor_name = COALESCE(?, auditor_name),
+        guardrails_evaluated = COALESCE(?, guardrails_evaluated),
+        overall_compliance_status = COALESCE(?, overall_compliance_status),
+        findings = COALESCE(?, findings),
+        attestation = COALESCE(?, attestation),
+        entity_version = entity_version + 1,
+        updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      updates.audit_name ?? null,
+      updates.auditor_name ?? null,
+      updates.guardrails_evaluated ? JSON.stringify(updates.guardrails_evaluated) : null,
+      updates.overall_compliance_status ?? null,
+      updates.findings ?? null,
+      updates.attestation ? JSON.stringify(updates.attestation) : null,
+      ts,
+      id
+    );
+  return getComplianceAudit(id)!;
+}
+
 export function listGovernanceRequests(): GovernanceRequest[] {
   const rows = getDb().prepare('SELECT * FROM governance_requests ORDER BY created_at DESC').all();
   return rows.map((r) => ({
@@ -761,6 +866,7 @@ export function listGovernanceRequests(): GovernanceRequest[] {
     owner_name: r.owner_name as string,
     status: r.status as GovernanceRequest['status'],
     solution_id: (r.solution_id as string) || undefined,
+    entity_version: Number(r.entity_version ?? 1),
     created_at: r.created_at as string,
     updated_at: r.updated_at as string,
     attestation: parseJsonObject<BitBopReceipt>(r.attestation as string),
@@ -775,8 +881,8 @@ export function createGovernanceRequest(
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO governance_requests (id, title, business_problem, requesting_unit, owner_name, status, solution_id, created_at, updated_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO governance_requests (id, title, business_problem, requesting_unit, owner_name, status, solution_id, entity_version, created_at, updated_at, attestation)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
     )
     .run(
       id,
@@ -801,6 +907,7 @@ export function listMeetingDecisions(): MeetingDecision[] {
     decision: r.decision as string,
     solution_id: (r.solution_id as string) || undefined,
     attendees: parseJsonArray<string>(r.attendees as string),
+    entity_version: Number(r.entity_version ?? 1),
     decided_at: r.decided_at as string,
     created_at: r.created_at as string,
     attestation: parseJsonObject<BitBopReceipt>(r.attestation as string),
@@ -815,8 +922,8 @@ export function createMeetingDecision(
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO meeting_decisions (id, title, decision, solution_id, attendees, decided_at, created_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO meeting_decisions (id, title, decision, solution_id, attendees, entity_version, decided_at, created_at, attestation)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
     )
     .run(
       id,
@@ -839,6 +946,7 @@ export function listRiskAssessments(): RiskAssessment[] {
     risk_tier: r.risk_tier as RiskAssessment['risk_tier'],
     findings: (r.findings as string) ?? '',
     assessor_name: r.assessor_name as string,
+    entity_version: Number(r.entity_version ?? 1),
     assessed_at: r.assessed_at as string,
     created_at: r.created_at as string,
     attestation: parseJsonObject<BitBopReceipt>(r.attestation as string),
@@ -853,8 +961,8 @@ export function createRiskAssessment(
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO risk_assessments (id, solution_id, risk_tier, findings, assessor_name, assessed_at, created_at, attestation)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO risk_assessments (id, solution_id, risk_tier, findings, assessor_name, entity_version, assessed_at, created_at, attestation)
+       VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`
     )
     .run(
       id,
@@ -869,29 +977,75 @@ export function createRiskAssessment(
   return listRiskAssessments().find((a) => a.id === id)!;
 }
 
+export function attachAttestationToEntity(
+  table:
+    | 'breaches'
+    | 'remediations'
+    | 'compliance_audits'
+    | 'governance_requests'
+    | 'meeting_decisions'
+    | 'risk_assessments',
+  id: string,
+  attestation: BitBopReceipt
+): void {
+  getDb()
+    .prepare(`UPDATE ${table} SET attestation = ? WHERE id = ?`)
+    .run(JSON.stringify(attestation), id);
+}
+
 // =============================================================================
 // Attestation Ledger
 // =============================================================================
+
+export interface StoredAttestationRow {
+  id: string;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  entity_version: number;
+  schema_version: number;
+  beacon_sequence: number;
+  signature: string;
+  snapshot_json: string;
+  receipt: string;
+  created_at: string;
+}
 
 export function saveAttestationRecord(
   att: BitBopReceipt,
   entityType = 'GOVERNANCE_EVENT',
   entityId = ''
-): void {
-  const id = randomUUID();
+): BitBopReceipt {
+  const id = (typeof att.id === 'string' && att.id) ? att.id : randomUUID();
   const ts = now();
+  const effectiveEntityType = att.entity_type || entityType;
+  const effectiveEntityId = att.entity_id || entityId;
+  const effectiveEntityVersion = Number(att.entity_version ?? 1);
+  const effectiveSchemaVersion = Number(att.schema_version ?? 1);
+  const snapshotObj = att.canonical_snapshot ?? {};
+  const snapshotJson = JSON.stringify(snapshotObj);
+
+  att.id = id;
+  att.schema_version = effectiveSchemaVersion;
+  att.entity_type = effectiveEntityType;
+  att.entity_id = effectiveEntityId;
+  att.entity_version = effectiveEntityVersion;
+
   getDb()
     .prepare(
-      `INSERT INTO attestations (id, event_type, entity_type, entity_id, beacon_sequence, signature, receipt, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO attestations (id, event_type, entity_type, entity_id, entity_version, schema_version, beacon_sequence, signature, snapshot_json, receipt, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
       att.event_type,
-      entityType,
-      entityId,
+      effectiveEntityType,
+      effectiveEntityId,
+      effectiveEntityVersion,
+      effectiveSchemaVersion,
       att.beacon_sequence,
       att.signature,
+      snapshotJson,
       JSON.stringify(att),
       ts
     );
@@ -899,13 +1053,22 @@ export function saveAttestationRecord(
   if (att.raw_receipt) {
     cacheRawReceipt(att.beacon_sequence, att.raw_receipt as Record<string, unknown>);
   }
+
+  return att;
 }
 
 export function listAttestationRecords(): BitBopReceipt[] {
   const rows = getDb().prepare('SELECT * FROM attestations ORDER BY created_at DESC').all();
   return rows.map((r) => {
-    const raw = (r as Record<string, unknown>).receipt as string;
-    return JSON.parse(raw) as BitBopReceipt;
+    const row = r as Record<string, unknown>;
+    const parsed = JSON.parse(row.receipt as string) as BitBopReceipt;
+    if (!parsed.id && typeof row.id === 'string') parsed.id = row.id;
+    if (!parsed.canonical_snapshot && typeof row.snapshot_json === 'string' && row.snapshot_json !== '{}') {
+      try {
+        parsed.canonical_snapshot = JSON.parse(row.snapshot_json) as Record<string, unknown>;
+      } catch {}
+    }
+    return parsed;
   });
 }
 
@@ -915,6 +1078,86 @@ export function getAttestationBySequence(seq: number): BitBopReceipt | undefined
     .get(seq);
   if (!row) return undefined;
   return JSON.parse((row as Record<string, unknown>).receipt as string) as BitBopReceipt;
+}
+
+export function getAttestationRecordById(id: string): StoredAttestationRow | undefined {
+  const row = getDb()
+    .prepare('SELECT * FROM attestations WHERE id = ?')
+    .get(id);
+  return row ? (row as unknown as StoredAttestationRow) : undefined;
+}
+
+export function getAttestationRecordBySequence(
+  seq: number,
+  entityId?: string,
+  eventType?: string
+): StoredAttestationRow | undefined {
+  if (entityId && eventType) {
+    const exact = getDb()
+      .prepare(
+        'SELECT * FROM attestations WHERE beacon_sequence = ? AND entity_id = ? AND event_type = ? ORDER BY created_at DESC'
+      )
+      .get(seq, entityId, eventType);
+    if (exact) return exact as unknown as StoredAttestationRow;
+  }
+  if (entityId) {
+    const byEntity = getDb()
+      .prepare(
+        'SELECT * FROM attestations WHERE beacon_sequence = ? AND entity_id = ? ORDER BY created_at DESC'
+      )
+      .get(seq, entityId);
+    if (byEntity) return byEntity as unknown as StoredAttestationRow;
+  }
+  const row = getDb()
+    .prepare('SELECT * FROM attestations WHERE beacon_sequence = ? ORDER BY created_at DESC')
+    .get(seq);
+  return row ? (row as unknown as StoredAttestationRow) : undefined;
+}
+
+export function hasAttestationForEntityVersion(
+  entityType: string,
+  entityId: string,
+  entityVersion: number
+): boolean {
+  if (!entityType || !entityId || !Number.isFinite(entityVersion)) return false;
+  const row = getDb()
+    .prepare(
+      `SELECT 1 FROM attestations
+       WHERE (UPPER(entity_type) = UPPER(?) OR UPPER(json_extract(snapshot_json, '$.entity_type')) = UPPER(?))
+         AND (entity_id = ? OR json_extract(snapshot_json, '$.entity_id') = ?)
+         AND entity_version = ?
+       LIMIT 1`
+    )
+    .get(entityType, entityType, entityId, entityId, entityVersion);
+  return Boolean(row);
+}
+
+export function getLiveEntityByTypeAndId(
+  entityType: string,
+  entityId: string
+): Record<string, unknown> | undefined {
+  if (!entityType || !entityId) return undefined;
+  const normalized = entityType.toUpperCase().trim();
+  switch (normalized) {
+    case 'SOLUTION':
+      return getSolution(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'CAPABILITY':
+      return getCapability(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'BREACH':
+      return getBreach(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'REMEDIATION':
+      return getRemediation(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'COMPLIANCE_AUDIT':
+      return getComplianceAudit(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'GOVERNANCE_REQUEST':
+      return listGovernanceRequests().find((r) => r.id === entityId) as unknown as Record<string, unknown> | undefined;
+    case 'MEETING_DECISION':
+      return listMeetingDecisions().find((d) => d.id === entityId) as unknown as Record<string, unknown> | undefined;
+    case 'RISK_ASSESSMENT':
+      return listRiskAssessments().find((a) => a.id === entityId) as unknown as Record<string, unknown> | undefined;
+    default:
+      return undefined;
+  }
 }
 
 // =============================================================================
