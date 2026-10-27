@@ -55,6 +55,7 @@ export interface Solution {
   lifecycle_stage: number;
   capability_ids: string[];
   control_ids: string[];
+  entity_version?: number;
   created_at: string;
   updated_at: string;
 }
@@ -80,6 +81,7 @@ export interface Capability {
   owner_name: string;
   status: CapabilityStatus;
   control_ids: string[];
+  entity_version?: number;
   created_at: string;
   updated_at: string;
 }
@@ -149,6 +151,7 @@ export interface Breach {
   description: string;
   reported_by: string;
   status: 'REPORTED' | 'INVESTIGATING' | 'REMEDIATING' | 'RESOLVED' | 'CLOSED';
+  entity_version?: number;
   reported_at: string;
   created_at: string;
   updated_at: string;
@@ -173,6 +176,7 @@ export interface Remediation {
   remediation_summary: string;
   verified_by: string;
   status: 'PLANNED' | 'IN_PROGRESS' | 'COMPLETED' | 'VERIFIED';
+  entity_version?: number;
   created_at: string;
   updated_at: string;
   attestation?: BitBopReceipt;
@@ -194,6 +198,7 @@ export interface ComplianceAudit {
   guardrails_evaluated: number[];
   overall_compliance_status: string;
   findings: string;
+  entity_version?: number;
   created_at: string;
   updated_at: string;
   attestation?: BitBopReceipt;
@@ -218,6 +223,7 @@ export interface GovernanceRequest {
   owner_name: string;
   status: 'OPEN' | 'IN_PROGRESS' | 'APPROVED' | 'REJECTED';
   solution_id?: string;
+  entity_version?: number;
   created_at: string;
   updated_at: string;
   attestation?: BitBopReceipt;
@@ -232,6 +238,7 @@ export interface MeetingDecision {
   decision: string;
   solution_id?: string;
   attendees: string[];
+  entity_version?: number;
   decided_at: string;
   created_at: string;
   attestation?: BitBopReceipt;
@@ -246,15 +253,31 @@ export interface RiskAssessment {
   risk_tier: RiskTier;
   findings: string;
   assessor_name: string;
+  entity_version?: number;
   assessed_at: string;
   created_at: string;
   attestation?: BitBopReceipt;
 }
 
 /**
+ * Canonical Snapshot bound to BitBop context_hash
+ */
+export interface CanonicalSnapshot {
+  schema_version: number;
+  source: 'aaims';
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  entity_version: number;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
+/**
  * BitBop Cryptographic Attestation Receipt
  */
 export interface BitBopReceipt {
+  id?: string;
   event_type: string;
   beacon_sequence: number;
   signature: string;
@@ -262,6 +285,11 @@ export interface BitBopReceipt {
   beacon_hash?: string;
   entropy_sha256?: string;
   context_hash?: string;
+  schema_version?: number;
+  entity_type?: string;
+  entity_id?: string;
+  entity_version?: number;
+  canonical_snapshot?: Record<string, unknown>;
   raw_receipt?: Record<string, unknown>;
   [key: string]: unknown;
 }

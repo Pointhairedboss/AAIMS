@@ -4,11 +4,16 @@
  * Stress-tests BitBop cryptographic integration, memory zeroization,
  * signature forgery bypass, bad ciphertext boundaries, and UI error handling.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import crypto from 'node:crypto';
+import type { Server } from 'node:http';
 import { MlKem768 } from 'mlkem';
+import { app } from '../../server/src/server.js';
+import { initDatabase, getDb } from '../../server/src/db.js';
+import { initBitBopClient } from '../../server/src/bitbop.js';
 
-const BASE = process.env.AAIMS_API_URL ?? 'http://localhost:4000';
+let BASE = process.env.AAIMS_API_URL ?? 'http://localhost:4000';
+let localServer: Server | null = null;
 
 async function api<T = unknown>(
   path: string,
@@ -23,6 +28,38 @@ async function api<T = unknown>(
 }
 
 describe('BitBop Adversarial Verification & Cryptographic Hardening (Tier 5)', () => {
+  beforeAll(async () => {
+    initDatabase();
+    await initBitBopClient();
+    await new Promise<void>((resolve) => {
+      localServer = app.listen(0, () => {
+        const addr = localServer!.address();
+        if (addr && typeof addr === 'object') {
+          BASE = `http://127.0.0.1:${addr.port}`;
+        }
+        resolve();
+      });
+    });
+    // Ensure at least one genuine attestation exists for cache-bypass forgery test
+    await api('/api/solutions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Baseline Attested Solution',
+        business_problem: 'Seed initial attestation for adversarial suite',
+        requesting_unit: 'Security',
+        owner_name: 'Marcus Chen',
+        owner_remit: 'Risk',
+        risk_tier: 'LOW',
+      }),
+    });
+  });
+
+  afterAll(async () => {
+    if (localServer) {
+      await new Promise<void>((resolve) => localServer!.close(() => resolve()));
+      localServer = null;
+    }
+  });
 
   describe('1. Cryptographic Signature Forgery & In-Memory Cache Bypass', () => {
     it('Correctly rejects verification for a FORGED signature even if beacon_sequence exists in rawReceiptCache', async () => {
@@ -211,6 +248,196 @@ describe('BitBop Adversarial Verification & Cryptographic Hardening (Tier 5)', (
       const sequence = (corruptReceipt as any).beacon_sequence;
       const provenanceUrl = `https://www.bitbop.dev/provenance?sequence=${sequence}`;
       expect(provenanceUrl).toBe('https://www.bitbop.dev/provenance?sequence=undefined');
+    });
+  });
+
+  describe('6. Scenario A01 — Historical Snapshot Verification vs. In-Place SQLite Tampering ([S4])', () => {
+    it('A01.1: Advancing a Solution from Stage 1 (v1) to Stage 2 (v2) via normal API preserves valid: true on the v1 receipt with current_entity_state.matches_snapshot: false', async () => {
+      // 1. Create a Solution at Stage 1 (v1)
+      const { status: createStatus, body: created } = await api<any>('/api/solutions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'A01 Lifecycle Drift Solution',
+          business_problem: 'Validate historical v1 snapshot verification across normal lifecycle updates',
+          requesting_unit: 'Risk & Compliance',
+          owner_name: 'Marcus Chen',
+          owner_remit: 'Enterprise Risk',
+          risk_tier: 'MEDIUM',
+        }),
+      });
+      expect(createStatus).toBe(201);
+      expect(created.id).toBeTruthy();
+      expect(created.lifecycle_stage).toBe(1);
+      expect(created.entity_version).toBe(1);
+
+      // 2. Retrieve the v1 SOLUTION_REQUESTED attestation receipt
+      const { status: attStatus, body: attestations } = await api<any[]>('/api/attestations');
+      expect(attStatus).toBe(200);
+      const v1Receipt = attestations.find(
+        (a) => a.entity_id === created.id && a.event_type === 'SOLUTION_REQUESTED' && a.entity_version === 1
+      );
+      expect(v1Receipt).toBeDefined();
+      expect(v1Receipt.schema_version).toBe(1);
+      expect(v1Receipt.entity_type).toBe('SOLUTION');
+      expect(v1Receipt.entity_version).toBe(1);
+      expect(v1Receipt.canonical_snapshot).toBeDefined();
+      expect(v1Receipt.canonical_snapshot.entity_version).toBe(1);
+
+      // Verify v1 receipt immediately while entity is still at v1
+      const { status: v1InitialStatus, body: v1InitialVerify } = await api<any>('/api/attestations/verify', {
+        method: 'POST',
+        body: JSON.stringify(v1Receipt),
+      });
+      expect(v1InitialStatus).toBe(200);
+      expect(v1InitialVerify.valid).toBe(true);
+      expect(v1InitialVerify.checks?.historical_snapshot_match).toBe(true);
+      expect(v1InitialVerify.current_entity_state).toEqual({
+        exists: true,
+        matches_snapshot: true,
+        attested_entity_version: 1,
+        current_entity_version: 1,
+      });
+
+      // 3. Advance the Solution from Stage 1 (v1) to Stage 2 (v2) via the normal API
+      const { status: stageStatus, body: updated } = await api<any>(`/api/solutions/${created.id}/stage`, {
+        method: 'PATCH',
+        body: JSON.stringify({ target_stage: 2 }),
+      });
+      expect(stageStatus).toBe(200);
+      expect(updated.lifecycle_stage).toBe(2);
+      expect(updated.entity_version).toBe(2);
+
+      // 4. Verify the historical v1 receipt after advancing to v2
+      const { status: v1AfterAdvanceStatus, body: v1AfterAdvanceVerify } = await api<any>(
+        '/api/attestations/verify',
+        {
+          method: 'POST',
+          body: JSON.stringify(v1Receipt),
+        }
+      );
+      expect(v1AfterAdvanceStatus).toBe(200);
+      expect(v1AfterAdvanceVerify.valid).toBe(true);
+      expect(v1AfterAdvanceVerify.checks?.historical_snapshot_match).toBe(true);
+      expect(v1AfterAdvanceVerify.current_entity_state).toEqual({
+        exists: true,
+        matches_snapshot: false,
+        attested_entity_version: 1,
+        current_entity_version: 2,
+      });
+    });
+
+    it('A01.2: Direct in-place SQLite tampering of solutions.title at v1 without governance attestation fails verification (valid: false)', async () => {
+      // 1. Create a Solution at Stage 1 (v1)
+      const { status: createStatus, body: created } = await api<any>('/api/solutions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'Untampered Solution Title v1',
+          business_problem: 'Detect silent SQLite column mutation at same entity_version',
+          requesting_unit: 'Internal Audit',
+          owner_name: 'Elena Rostova',
+          owner_remit: 'Governance Assurance',
+          risk_tier: 'HIGH',
+        }),
+      });
+      expect(createStatus).toBe(201);
+      expect(created.entity_version).toBe(1);
+
+      // 2. Locate the v1 receipt
+      const { body: attestations } = await api<any[]>('/api/attestations');
+      const v1Receipt = attestations.find(
+        (a) => a.entity_id === created.id && a.event_type === 'SOLUTION_REQUESTED' && a.entity_version === 1
+      );
+      expect(v1Receipt).toBeDefined();
+
+      // 3. Directly mutate solutions.title in SQLite at v1 WITHOUT advancing entity_version or creating an attestation
+      getDb()
+        .prepare('UPDATE solutions SET title = ? WHERE id = ?')
+        .run('SILENTLY_TAMPERED_SQLITE_TITLE', created.id);
+
+      // Confirm entity_version in DB is still 1 while title is mutated
+      const tamperedRow = getDb()
+        .prepare('SELECT title, entity_version FROM solutions WHERE id = ?')
+        .get(created.id) as { title: string; entity_version: number };
+      expect(tamperedRow.title).toBe('SILENTLY_TAMPERED_SQLITE_TITLE');
+      expect(tamperedRow.entity_version).toBe(1);
+
+      // 4. Verify the v1 receipt via POST /api/attestations/verify -> MUST FAIL (valid: false)
+      const { status: verifyStatus, body: verifyResult } = await api<any>('/api/attestations/verify', {
+        method: 'POST',
+        body: JSON.stringify(v1Receipt),
+      });
+      expect(verifyStatus).toBe(200);
+      expect(verifyResult.valid).toBe(false);
+      expect(verifyResult.checks?.historical_snapshot_match).toBe(false);
+      expect(verifyResult.tampered_in_place).toBe(true);
+      expect(verifyResult.reason).toBe('Entity record tampered in-place without governance attestation');
+      expect(verifyResult.current_entity_state).toEqual({
+        exists: true,
+        matches_snapshot: false,
+        attested_entity_version: 1,
+        current_entity_version: 1,
+      });
+    });
+
+    it('A01.3: Rejects unattested entity_version bump in SQLite, forged receipt ID with valid beacon_sequence, and mismatched raw_receipt.attestation.context_hash', async () => {
+      const { status: createStatus, body: created } = await api<any>('/api/solutions', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'A01.3 Hardened Verification Target',
+          business_problem: 'Detect unattested version bumps and receipt ID / raw context_hash spoofing',
+          requesting_unit: 'Security Engineering',
+          owner_name: 'Alex Zhao',
+          owner_remit: 'Cyber Security',
+          risk_tier: 'HIGH',
+        }),
+      });
+      expect(createStatus).toBe(201);
+
+      const { body: attestations } = await api<any[]>('/api/attestations');
+      const v1Receipt = attestations.find(
+        (a) => a.entity_id === created.id && a.event_type === 'SOLUTION_REQUESTED' && a.entity_version === 1
+      );
+      expect(v1Receipt).toBeDefined();
+
+      // (a) Forged receipt.id with valid beacon_sequence falls back to sequence lookup and detects ID mismatch
+      const spoofedIdReceipt = {
+        ...v1Receipt,
+        id: '00000000-0000-0000-0000-000000000000',
+      };
+      const { body: idMismatchResult } = await api<any>('/api/attestations/verify', {
+        method: 'POST',
+        body: JSON.stringify(spoofedIdReceipt),
+      });
+      expect(idMismatchResult.valid).toBe(false);
+      expect(idMismatchResult.checks?.historical_snapshot_match).toBe(false);
+      expect(idMismatchResult.reason).toBe('Receipt ID does not match stored attestation record');
+
+      // (b) Mismatched raw_receipt.attestation.context_hash is rejected
+      const tamperedRawReceipt = JSON.parse(JSON.stringify(v1Receipt));
+      if (tamperedRawReceipt.raw_receipt?.attestation) {
+        tamperedRawReceipt.raw_receipt.attestation.context_hash = `sha256:${'f'.repeat(64)}`;
+      }
+      const { body: rawHashMismatchResult } = await api<any>('/api/attestations/verify', {
+        method: 'POST',
+        body: JSON.stringify(tamperedRawReceipt),
+      });
+      expect(rawHashMismatchResult.valid).toBe(false);
+      expect(rawHashMismatchResult.checks?.historical_snapshot_match).toBe(false);
+      expect(rawHashMismatchResult.reason).toBe('Raw receipt context_hash does not match canonical snapshot digest');
+
+      // (c) Direct SQLite tamper that increments entity_version = entity_version + 1 without an attestation record
+      getDb()
+        .prepare('UPDATE solutions SET title = ?, entity_version = entity_version + 1 WHERE id = ?')
+        .run('TAMPERED_WITH_VERSION_BUMP', created.id);
+
+      const { body: unattestedVersionResult } = await api<any>('/api/attestations/verify', {
+        method: 'POST',
+        body: JSON.stringify(v1Receipt),
+      });
+      expect(unattestedVersionResult.valid).toBe(false);
+      expect(unattestedVersionResult.checks?.historical_snapshot_match).toBe(false);
+      expect(unattestedVersionResult.tampered_in_place).toBe(true);
+      expect(unattestedVersionResult.reason).toBe('Entity version advanced without governance attestation');
     });
   });
 });
