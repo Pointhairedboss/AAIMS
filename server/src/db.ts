@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 import type { DatabaseSync as DatabaseSyncType } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as {
@@ -28,7 +30,8 @@ import type {
 } from './types.js';
 import { cacheRawReceipt } from './bitbop.js';
 
-let db: DatabaseSync;
+let db: DatabaseSync | null = null;
+let currentDbPath: string | null = null;
 
 function now(): string {
   return new Date().toISOString();
@@ -53,16 +56,51 @@ function parseJsonObject<T>(val: string | null | undefined): T | undefined {
   }
 }
 
+export function getDefaultDbPath(): string {
+  const envPath = process.env.AAIMS_DB_PATH?.trim();
+  if (envPath && envPath.length > 0) {
+    return envPath;
+  }
+  return path.resolve(process.cwd(), 'data', 'aaims.sqlite');
+}
+
+export function getCurrentDbPath(): string | null {
+  return currentDbPath;
+}
+
+export function closeDatabase(): void {
+  if (db) {
+    try {
+      db.close();
+    } catch {
+      // ignore if already closed
+    }
+    db = null;
+    currentDbPath = null;
+  }
+}
+
 export function getDb(): DatabaseSync {
   if (!db) {
     initDatabase();
   }
-  return db;
+  return db!;
 }
 
-export function initDatabase(dbPath = ':memory:'): DatabaseSync {
-  db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA foreign_keys = ON');
+export function initDatabase(dbPath: string = getDefaultDbPath()): DatabaseSync {
+  closeDatabase();
+
+  const trimmedPath = dbPath.trim();
+  const isMemory = trimmedPath === ':memory:' || trimmedPath.startsWith('file::memory:');
+  const resolvedPath = isMemory ? trimmedPath : path.resolve(trimmedPath);
+
+  if (!isMemory) {
+    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+  }
+
+  db = new DatabaseSync(resolvedPath);
+  currentDbPath = resolvedPath;
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
   // 1. Core Object: SOLUTIONS
   db.exec(`
@@ -112,6 +150,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
       supply_chain_role TEXT NOT NULL DEFAULT 'BOTH',
       owner_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'ACTIVE',
+      entity_version INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -247,6 +286,7 @@ export function initDatabase(dbPath = ':memory:'): DatabaseSync {
   const migrationSql = [
     'ALTER TABLE solutions ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE capabilities ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
+    'ALTER TABLE controls ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE breaches ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE remediations ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
     'ALTER TABLE compliance_audits ADD COLUMN entity_version INTEGER NOT NULL DEFAULT 1',
@@ -318,6 +358,7 @@ function mapControlRow(row: Record<string, unknown>): Control {
     supply_chain_role: row.supply_chain_role as Control['supply_chain_role'],
     owner_name: row.owner_name as string,
     status: row.status as Control['status'],
+    entity_version: Number(row.entity_version ?? 1),
     created_at: row.created_at as string,
     updated_at: (row.updated_at as string) ?? row.created_at as string,
   };
@@ -458,27 +499,50 @@ export function updateSolution(id: string, updates: Partial<Solution>): Solution
   return getSolution(id)!;
 }
 
-export function linkCapabilityToSolution(solutionId: string, capabilityId: string): Solution {
+export function linkCapabilitiesToSolution(solutionId: string, capabilityIds: string[]): Solution {
   const sol = getSolution(solutionId);
   if (!sol) throw new Error(`Solution ${solutionId} not found`);
   const current = new Set(sol.capability_ids);
-  current.add(capabilityId);
+  const initialSize = current.size;
+  for (const cid of capabilityIds) {
+    if (cid) current.add(cid);
+  }
+  if (current.size === initialSize) {
+    return sol;
+  }
   return updateSolution(solutionId, { capability_ids: Array.from(current) });
+}
+
+export function linkCapabilityToSolution(solutionId: string, capabilityId: string): Solution {
+  return linkCapabilitiesToSolution(solutionId, [capabilityId]);
 }
 
 export function unlinkCapabilityFromSolution(solutionId: string, capabilityId: string): Solution {
   const sol = getSolution(solutionId);
   if (!sol) throw new Error(`Solution ${solutionId} not found`);
   const current = sol.capability_ids.filter((id) => id !== capabilityId);
+  if (current.length === sol.capability_ids.length) {
+    return sol;
+  }
   return updateSolution(solutionId, { capability_ids: current });
 }
 
-export function linkControlToSolution(solutionId: string, controlId: string): Solution {
+export function linkControlsToSolution(solutionId: string, controlIds: string[]): Solution {
   const sol = getSolution(solutionId);
   if (!sol) throw new Error(`Solution ${solutionId} not found`);
   const current = new Set(sol.control_ids);
-  current.add(controlId);
+  const initialSize = current.size;
+  for (const cid of controlIds) {
+    if (cid) current.add(cid);
+  }
+  if (current.size === initialSize) {
+    return sol;
+  }
   return updateSolution(solutionId, { control_ids: Array.from(current) });
+}
+
+export function linkControlToSolution(solutionId: string, controlId: string): Solution {
+  return linkControlsToSolution(solutionId, [controlId]);
 }
 
 // =============================================================================
@@ -548,12 +612,22 @@ export function updateCapability(id: string, updates: Partial<Capability>): Capa
   return getCapability(id)!;
 }
 
-export function linkControlToCapability(capabilityId: string, controlId: string): Capability {
+export function linkControlsToCapability(capabilityId: string, controlIds: string[]): Capability {
   const cap = getCapability(capabilityId);
   if (!cap) throw new Error(`Capability ${capabilityId} not found`);
   const current = new Set(cap.control_ids);
-  current.add(controlId);
+  const initialSize = current.size;
+  for (const cid of controlIds) {
+    if (cid) current.add(cid);
+  }
+  if (current.size === initialSize) {
+    return cap;
+  }
   return updateCapability(capabilityId, { control_ids: Array.from(current) });
+}
+
+export function linkControlToCapability(capabilityId: string, controlId: string): Capability {
+  return linkControlsToCapability(capabilityId, [controlId]);
 }
 
 // =============================================================================
@@ -575,8 +649,8 @@ export function createControl(input: CreateControlInput): Control {
   const ts = now();
   getDb()
     .prepare(
-      `INSERT INTO controls (id, code, title, description, control_type, package_name, naic_guardrail_number, supply_chain_role, owner_name, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO controls (id, code, title, description, control_type, package_name, naic_guardrail_number, supply_chain_role, owner_name, status, entity_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
     )
     .run(
       id,
@@ -612,6 +686,7 @@ export function updateControl(id: string, updates: Partial<Control>): Control {
         supply_chain_role = COALESCE(?, supply_chain_role),
         owner_name = COALESCE(?, owner_name),
         status = COALESCE(?, status),
+        entity_version = entity_version + 1,
         updated_at = ?
        WHERE id = ?`
     )
@@ -754,11 +829,6 @@ export function createRemediation(
       ts,
       attestation ? JSON.stringify(attestation) : null
     );
-
-  // Update underlying breach status to RESOLVED
-  try {
-    updateBreach(input.breach_id, { status: 'RESOLVED' });
-  } catch {}
 
   return getRemediation(id)!;
 }
@@ -1143,6 +1213,8 @@ export function getLiveEntityByTypeAndId(
       return getSolution(entityId) as unknown as Record<string, unknown> | undefined;
     case 'CAPABILITY':
       return getCapability(entityId) as unknown as Record<string, unknown> | undefined;
+    case 'CONTROL':
+      return getControl(entityId) as unknown as Record<string, unknown> | undefined;
     case 'BREACH':
       return getBreach(entityId) as unknown as Record<string, unknown> | undefined;
     case 'REMEDIATION':

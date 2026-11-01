@@ -1,29 +1,37 @@
 /**
  * BitBop Independent Cryptographic Verification Helper
- * Interacts directly with https://api.bitbop.dev/verify to validate receipts.
+ * Interacts directly with BitBop /verify (local BitBopCoordinator or live https://api.bitbop.dev/verify)
+ * to validate post-quantum receipts.
  */
 
 export interface BitBopVerifyPayload {
-  beacon_sequence: number;
-  signature: string;
+  beacon_sequence?: number;
+  signature?: string;
   canonical_digest?: string;
   public_key_id?: string;
+  [key: string]: unknown;
 }
 
 export interface BitBopVerifyResponse {
   valid: boolean;
+  reason?: string;
   beacon_sequence?: number;
   scheme?: string;
   beacon_signature_valid?: boolean;
   receipt_signature_valid?: boolean;
   entropy_bound_to_beacon?: boolean;
+  checks?: Record<string, boolean>;
   error?: string;
 }
 
 /**
  * Validates local syntactic integrity of a BitBop attestation receipt
  */
-export function validateReceiptFormat(receipt: { beacon_sequence: number; signature: string; canonical_digest?: string }) {
+export function validateReceiptFormat(receipt: {
+  beacon_sequence: number;
+  signature: string;
+  canonical_digest?: string;
+}) {
   if (typeof receipt.beacon_sequence !== 'number' || receipt.beacon_sequence <= 0) {
     throw new Error(`Invalid beacon_sequence: ${receipt.beacon_sequence}. Must be > 0.`);
   }
@@ -49,12 +57,12 @@ export function validateReceiptFormat(receipt: { beacon_sequence: number; signat
 }
 
 /**
- * Performs a live public cryptographic check against https://api.bitbop.dev/verify
+ * Performs a cryptographic check against the configured BitBop /verify endpoint
  */
 export async function verifyWithBitBopEdge(
   payload: BitBopVerifyPayload,
-  edgeUrl = 'https://api.bitbop.dev'
-): Promise<BitBopVerifyResponse> {
+  edgeUrl = process.env.BITBOP_API_URL || 'https://api.bitbop.dev'
+): Promise<{ status: number; data: BitBopVerifyResponse }> {
   const url = `${edgeUrl.replace(/\/+$/, '')}/verify`;
   const res = await fetch(url, {
     method: 'POST',
@@ -66,5 +74,5 @@ export async function verifyWithBitBopEdge(
   });
 
   const data = (await res.json().catch(() => ({}))) as BitBopVerifyResponse;
-  return data;
+  return { status: res.status, data };
 }

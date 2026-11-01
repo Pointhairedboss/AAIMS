@@ -58,9 +58,62 @@ export const VerificationModal: React.FC<VerificationModalProps> = ({
               </div>
             </div>
 
-            {result.error && (
-              <div className="alert alert-danger" style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}>
-                <strong>Verification Error:</strong> {result.error}
+            {(!result.valid ? (result.reason || result.error) : result.error) && (
+              <div
+                className="alert alert-danger"
+                data-testid="verification-failure-reason"
+                style={{ marginTop: '0.75rem', fontSize: '0.85rem' }}
+              >
+                <strong>Verification Failure Reason:</strong>{' '}
+                {!result.valid ? (result.reason || result.error) : result.error}
+              </div>
+            )}
+
+            {result.current_entity_state && (
+              <div
+                data-testid="entity-version-drift-badge"
+                style={{
+                  marginTop: '0.75rem',
+                  padding: '0.6rem 0.75rem',
+                  borderRadius: '6px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'var(--bg-subtle)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexWrap: 'wrap',
+                  gap: '0.5rem',
+                  fontSize: '0.8rem',
+                }}
+              >
+                <span style={{ fontWeight: 600 }}>
+                  Governance State:{' '}
+                  <code>
+                    {`Attested v${result.current_entity_state.attested_entity_version} -> Current ${
+                      result.current_entity_state.exists &&
+                      result.current_entity_state.current_entity_version !== null
+                        ? `v${result.current_entity_state.current_entity_version}`
+                        : 'Deleted'
+                    }`}
+                  </code>
+                </span>
+                <span
+                  className={`badge ${
+                    !result.current_entity_state.exists || result.tampered_in_place
+                      ? 'badge-suspended'
+                      : result.current_entity_state.matches_snapshot
+                        ? 'badge-authorised'
+                        : 'badge-draft'
+                  }`}
+                >
+                  {!result.current_entity_state.exists
+                    ? 'Entity Deleted'
+                    : result.tampered_in_place
+                      ? 'Tampered In-Place'
+                      : result.current_entity_state.matches_snapshot
+                        ? 'Live State Matches Snapshot'
+                        : 'Historical Snapshot (Superseded)'}
+                </span>
               </div>
             )}
 
@@ -93,7 +146,7 @@ export const VerificationModal: React.FC<VerificationModalProps> = ({
             {result.checks && (
               <div style={{ margin: '1rem 0', backgroundColor: 'var(--bg-subtle)', padding: '0.75rem', borderRadius: '4px' }}>
                 <h4 style={{ fontSize: '0.775rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                  5-Point Cryptographic Integrity Checks
+                  7-Point Cryptographic &amp; Governance Integrity Checks
                 </h4>
                 <ul style={{ listStyle: 'none', fontSize: '0.8rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                   <li>{result.checks.beacon_exists ? '✓' : '✗'} Beacon Exists on Hardware Bus: {result.checks.beacon_exists ? 'PASS' : 'FAIL'}</li>
@@ -101,6 +154,8 @@ export const VerificationModal: React.FC<VerificationModalProps> = ({
                   <li>{result.checks.beacon_signature_valid ? '✓' : '✗'} Quantum Beacon Signature: {result.checks.beacon_signature_valid ? 'PASS' : 'FAIL'}</li>
                   <li>{result.checks.entropy_bound_to_beacon ? '✓' : '✗'} Thermal Entropy Bound: {result.checks.entropy_bound_to_beacon ? 'PASS' : 'FAIL'}</li>
                   <li>{result.checks.receipt_signature_valid ? '✓' : '✗'} ML-DSA-44 Receipt Signature: {result.checks.receipt_signature_valid ? 'PASS' : 'FAIL'}</li>
+                  <li>{result.checks.local_mldsa44_signature_valid ? '✓' : '✗'} Local Pinned ML-DSA-44 Lattice Signature: {result.checks.local_mldsa44_signature_valid ? 'PASS' : 'FAIL'}</li>
+                  <li>{result.checks.historical_snapshot_match ? '✓' : '✗'} Historical Governance Snapshot Match: {result.checks.historical_snapshot_match ? 'PASS' : 'FAIL'}</li>
                 </ul>
               </div>
             )}

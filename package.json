@@ -28,9 +28,11 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
+    "@types/jsdom": "^30.0.0",
     "@types/node": "^22.10.0",
     "concurrently": "^9.1.0",
     "dotenv": "^16.4.7",
+    "jsdom": "^29.1.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"

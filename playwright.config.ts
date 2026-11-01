@@ -2,7 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * AAIMS Master Playwright Configuration
- * Designed for Windows execution using Edge or Chrome channels.
+ * Self-contained stack startup (real local BitBopCoordinator + AAIMS Express + Vite)
+ * using Google Chrome channel for E2E verification.
  */
 export default defineConfig({
   testDir: './tests',
@@ -26,28 +27,28 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },
+  webServer: {
+    command: 'node --import tsx tests/helpers/start_playwright_stack.ts',
+    url: 'http://localhost:5173',
+    reuseExistingServer: process.env.REUSE_SERVER === '1',
+    timeout: 60000,
+  },
   projects: [
-    {
-      name: 'msedge',
-      use: {
-        ...devices['Desktop Edge'],
-        channel: 'msedge',
-        headless: true,
-      },
-    },
-    {
-      name: 'chrome',
-      use: {
-        ...devices['Desktop Chrome'],
-        channel: 'chrome',
-        headless: true,
-      },
-    },
     {
       name: 'api',
       testDir: './tests/api',
       use: {
         baseURL: process.env.API_URL || 'http://localhost:4000',
+      },
+    },
+    {
+      name: 'chrome',
+      testDir: './tests/e2e',
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chrome',
+        headless: true,
+        baseURL: process.env.APP_URL || 'http://localhost:5173',
       },
     },
   ],

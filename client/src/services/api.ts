@@ -138,9 +138,7 @@ export async function linkControlsToCapability(
 
 // Controls
 export async function fetchControls(): Promise<Control[]> {
-  const res = await request<Control[] | { controls: Control[] }>('/controls');
-  if (Array.isArray(res)) return res;
-  return res.controls || [];
+  return request<Control[]>('/controls');
 }
 
 // Working Group Members

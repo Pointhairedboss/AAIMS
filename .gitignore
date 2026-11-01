@@ -18,10 +18,16 @@ server/.bitbop_key
 *.pem
 
 # Database and runtime logs
+data/
+server/data/
 *.sqlite
 *.sqlite3
 *.sqlite-journal
 *.sqlite3-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
 *.log
 logs/
 npm-debug.log*

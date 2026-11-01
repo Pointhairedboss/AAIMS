@@ -17,15 +17,25 @@ export const LinkCapabilityModal: React.FC<LinkCapabilityModalProps> = ({
   linkedIds,
   onLink,
 }) => {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [submitting, setSubmitting] = useState(false);
+  const computeInitialSelection = () =>
+    linkedIds.length > 0 ? linkedIds : capabilities[0] ? [capabilities[0].id] : [];
 
-  // Initialize or reset selections when modal opens
-  React.useEffect(() => {
-    if (isOpen) {
-      setSelected(linkedIds.length > 0 ? linkedIds : (capabilities[0] ? [capabilities[0].id] : []));
+  const [selected, setSelected] = useState<string[]>(computeInitialSelection);
+  const [submitting, setSubmitting] = useState(false);
+  const wasOpenRef = React.useRef(isOpen);
+
+  if (isOpen && !wasOpenRef.current) {
+    wasOpenRef.current = true;
+    const initial = computeInitialSelection();
+    if (
+      selected.length !== initial.length ||
+      selected.some((id, idx) => id !== initial[idx])
+    ) {
+      setSelected(initial);
     }
-  }, [isOpen, linkedIds, capabilities]);
+  } else if (!isOpen && wasOpenRef.current) {
+    wasOpenRef.current = false;
+  }
 
   const toggleSelection = (id: string) => {
     setSelected((prev) =>

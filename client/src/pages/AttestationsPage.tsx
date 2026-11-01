@@ -93,12 +93,15 @@ export const AttestationsPage: React.FC<AttestationsPageProps> = ({
                 </div>
 
                 <div className="crypto-hash-box">
-                  <div><strong>Signature (ML-DSA-44):</strong> {att.signature}</div>
+                  <div><strong>Signature (ML-DSA-44):</strong> {att.signature || 'N/A'}</div>
                   <div style={{ marginTop: '0.35rem' }}>
-                    <strong>Beacon Hash:</strong> {att.beacon_hash || 'e22966b930e8135b17b6f5c109067a74...'}
+                    <strong>Beacon Hash:</strong> {att.beacon_hash || 'N/A'}
                   </div>
                   <div style={{ marginTop: '0.35rem' }}>
-                    <strong>Entropy SHA-256:</strong> {att.entropy_sha256 || '4f347337f531129685c1cc748caf88f4...'}
+                    <strong>Entropy SHA-256:</strong> {att.entropy_sha256 || 'N/A'}
+                  </div>
+                  <div style={{ marginTop: '0.35rem' }}>
+                    <strong>Context Hash:</strong> {att.context_hash || 'N/A'}
                   </div>
                 </div>
 

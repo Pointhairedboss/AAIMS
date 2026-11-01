@@ -104,11 +104,10 @@ export const WorkingGroupStepper: React.FC<WorkingGroupStepperProps> = ({
     setAdvancing(true);
     try {
       await onAdvanceStage(7, selectedApprover);
+      await onAdvanceStage(8, selectedApprover);
       setIsApproved(true);
       setActiveStage(8);
       setSuccessMessage('Approved: Delegated authority Working Group approval gate passed.');
-      // Proceed to stage 8 (implementation) in backend as well
-      await onAdvanceStage(8, selectedApprover).catch(() => {});
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMessage(`Approval rejected: ${msg}`);

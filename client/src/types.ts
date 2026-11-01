@@ -112,13 +112,23 @@ export interface VerificationResult {
   beacon_sequence?: number;
   scheme?: string;
   error?: string;
+  reason?: string;
+  tampered_in_place?: boolean;
   checks?: {
     beacon_exists?: boolean;
     beacon_hash_match?: boolean;
     beacon_signature_valid?: boolean;
     entropy_bound_to_beacon?: boolean;
     receipt_signature_valid?: boolean;
+    local_mldsa44_signature_valid?: boolean;
+    historical_snapshot_match?: boolean;
     ordering_reproducible?: boolean;
+  };
+  current_entity_state?: {
+    exists: boolean;
+    matches_snapshot: boolean;
+    attested_entity_version: number;
+    current_entity_version: number | null;
   };
   [key: string]: unknown;
 }

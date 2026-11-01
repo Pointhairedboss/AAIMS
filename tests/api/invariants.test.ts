@@ -1,21 +1,26 @@
 /**
- * AAIMS programmatic invariant API tests.
- * Requires backend running on http://localhost:4000 (Phase 4).
+ * AAIMS programmatic invariant & SQLite persistence API tests.
+ * Uses real local BitBopCoordinator (or https://api.bitbop.dev when BITBOP_LIVE_E2E=1).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { Server } from 'node:http';
-import { app } from '../../server/src/server.js';
-import { initDatabase } from '../../server/src/db.js';
-import { initBitBopClient } from '../../server/src/bitbop.js';
+import { app, bootstrapSeedAttestations } from '../../server/src/server.js';
+import { initDatabase, closeDatabase, getDb, getDefaultDbPath } from '../../server/src/db.js';
+import { initBitBopClient, resetBitBopClient } from '../../server/src/bitbop.js';
+import { startLocalBitBopNode, type LocalBitBopNodeHandle } from '../helpers/local_bitbop_node.js';
 
-let BASE = process.env.AAIMS_API_URL ?? 'http://localhost:4000';
+let BASE = 'http://127.0.0.1:0';
 let localServer: Server | null = null;
+let bitbopNode: LocalBitBopNodeHandle | null = null;
 
 async function api<T = unknown>(
-  path: string,
+  routePath: string,
   init?: RequestInit
 ): Promise<{ status: number; body: T }> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${routePath}`, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   });
@@ -86,18 +91,18 @@ async function advanceToStage(solutionId: string, target: number) {
   return { status: 200, body: {}, failedAt: null };
 }
 
-describe('AAIMS API invariants', () => {
+describe('AAIMS API invariants & Persistent Disk SQLite', () => {
   beforeAll(async () => {
-    try {
-      const check = await fetch(`${BASE}/api/health`);
-      if (check.ok) return;
-    } catch {
-      // start local in-process server
-    }
-    initDatabase();
+    bitbopNode = await startLocalBitBopNode();
+    bitbopNode.applyProcessEnv();
+    resetBitBopClient();
+
+    initDatabase(':memory:');
     await initBitBopClient();
+    await bootstrapSeedAttestations();
+
     await new Promise<void>((resolve) => {
-      localServer = app.listen(0, () => {
+      localServer = app.listen(0, '127.0.0.1', () => {
         const addr = localServer!.address();
         if (addr && typeof addr === 'object') {
           BASE = `http://127.0.0.1:${addr.port}`;
@@ -113,6 +118,11 @@ describe('AAIMS API invariants', () => {
     if (localServer) {
       await new Promise<void>((resolve) => localServer!.close(() => resolve()));
       localServer = null;
+    }
+    closeDatabase();
+    if (bitbopNode) {
+      await bitbopNode.close();
+      bitbopNode = null;
     }
   });
 
@@ -205,17 +215,106 @@ describe('AAIMS API invariants', () => {
     });
   });
 
-  describe('Governance seed & BitBop wiring', () => {
-    it('exposes NAIC seed controls (10 Guardrails)', async () => {
-      const { status, body } = await api<{ controls: unknown[] }>('/api/controls');
-      expect(status).toBe(200);
-      expect(Array.isArray(body.controls)).toBe(true);
-      expect(body.controls.length).toBeGreaterThanOrEqual(10);
+  describe('Governance seed, uniform Controls contract & file-backed SQLite persistence', () => {
+    it('exposes NAIC seed controls as uniform Control[] regardless of User-Agent', async () => {
+      const resBrowserUa = await api<unknown[]>('/api/controls', {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0' },
+      });
+      const resPlaywrightUa = await api<unknown[]>('/api/controls', {
+        headers: { 'User-Agent': 'Playwright/1.49.0' },
+      });
+      expect(resBrowserUa.status).toBe(200);
+      expect(resPlaywrightUa.status).toBe(200);
+      expect(Array.isArray(resBrowserUa.body)).toBe(true);
+      expect(Array.isArray(resPlaywrightUa.body)).toBe(true);
+      expect(resBrowserUa.body.length).toBeGreaterThanOrEqual(10);
+      expect(resBrowserUa.body.length).toBe(resPlaywrightUa.body.length);
     });
 
-    it('exposes BitBop verify proxy', async () => {
-      const { status } = await api('/api/bitbop/status');
-      expect([200, 503]).toContain(status);
+    it('defaults getDefaultDbPath() to persistent disk data/aaims.sqlite and persists records + ML-DSA-44 attestations across SQLite close & reopen', async () => {
+      const prevEnvPath = process.env.AAIMS_DB_PATH;
+      delete process.env.AAIMS_DB_PATH;
+      try {
+        const defaultPath = getDefaultDbPath();
+        expect(defaultPath).toBe(path.resolve(process.cwd(), 'data', 'aaims.sqlite'));
+      } finally {
+        if (prevEnvPath !== undefined) process.env.AAIMS_DB_PATH = prevEnvPath;
+      }
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aaims-sqlite-persist-'));
+      const tmpDbPath = path.join(tmpDir, 'nested', 'aaims-durable.sqlite');
+
+      try {
+        // 1. Open file-backed SQLite database (auto-creates parent directory + WAL mode)
+        initDatabase(tmpDbPath);
+        expect(fs.existsSync(tmpDbPath)).toBe(true);
+
+        const journalRow = getDb().prepare('PRAGMA journal_mode').get() as { journal_mode: string };
+        expect(journalRow.journal_mode.toLowerCase()).toBe('wal');
+
+        // 2. Create a Solution (v1) and advance to Stage 2 (v2) via real HTTP API + BitBop attestation
+        const createRes = await api<{ id: string; entity_version: number }>('/api/solutions', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: 'Durable Disk Governance Solution',
+            business_problem: 'Prove SQLite WAL persistence across process restarts',
+            requesting_unit: 'Enterprise Architecture',
+            owner_name: 'Elena Rostova',
+            owner_remit: 'AI Governance',
+            risk_tier: 'HIGH',
+          }),
+        });
+        expect(createRes.status).toBe(201);
+        const solId = createRes.body.id;
+
+        const stageRes = await advanceStage(solId, 2);
+        expect(stageRes.status).toBe(200);
+
+        // 3. Close SQLite completely (simulating server shutdown)
+        closeDatabase();
+
+        // 4. Re-open SQLite from the exact disk file (simulating server restart)
+        initDatabase(tmpDbPath);
+
+        // 5. Verify Solution state and both v1 + v2 cryptographic attestations survived on disk
+        const getSolRes = await api<{ id: string; title: string; lifecycle_stage: number; entity_version: number }>(
+          `/api/solutions/${solId}`
+        );
+        expect(getSolRes.status).toBe(200);
+        expect(getSolRes.body.title).toBe('Durable Disk Governance Solution');
+        expect(getSolRes.body.lifecycle_stage).toBe(2);
+        expect(getSolRes.body.entity_version).toBe(2);
+
+        const attRes = await api<Array<Record<string, unknown>>>('/api/attestations');
+        expect(attRes.status).toBe(200);
+        const solReceipts = attRes.body.filter((r) => r.entity_id === solId);
+        expect(solReceipts.length).toBe(2);
+
+        for (const rcpt of solReceipts) {
+          const verifyRes = await api<{
+            valid: boolean;
+            checks: { local_mldsa44_signature_valid: boolean; historical_snapshot_match: boolean };
+          }>('/api/attestations/verify', {
+            method: 'POST',
+            body: JSON.stringify(rcpt),
+          });
+          expect(verifyRes.status).toBe(200);
+          expect(verifyRes.body.valid).toBe(true);
+          expect(verifyRes.body.checks.local_mldsa44_signature_valid).toBe(true);
+          expect(verifyRes.body.checks.historical_snapshot_match).toBe(true);
+        }
+      } finally {
+        closeDatabase();
+        initDatabase(':memory:');
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('exposes provisioned BitBop client status', async () => {
+      const { status, body } = await api<{ provisioned: boolean; pinned_key_id: string }>('/api/bitbop/status');
+      expect(status).toBe(200);
+      expect(body.provisioned).toBe(true);
+      expect(body.pinned_key_id).toBe('mldsa44-release-2026-01');
     });
   });
 });
